@@ -136,6 +136,7 @@
   .field { display:flex; flex-direction:column; gap:6px; }
   .field label { font-size:12px; color:var(--muted); }
   .field .hint { font-size:12px; color:var(--muted); line-height:1.6; }
+  .sheet input[type="range"] { padding:0; background:transparent; border:none; accent-color:var(--accent); height:32px; }
   .sheet input, .sheet select, .sheet textarea {
     font:inherit; font-size:15px; color:var(--text); width:100%;
     background:var(--sunken); border:1px solid var(--line);
@@ -179,7 +180,7 @@
 
 <div id="subs">
   <div class="bubble me hidden" id="sub-me"><span class="who">あなた</span><span class="body"></span></div>
-  <div class="bubble her hidden" id="sub-her"><span class="who">Emma</span><span class="body"></span></div>
+  <div class="bubble her hidden" id="sub-her"><span class="who"></span><span class="body"></span></div>
 </div>
 
 <div id="controls">
@@ -210,6 +211,36 @@
   <div class="inner">
     <div class="grab"></div>
     <h2>設定</h2>
+
+    <div class="field">
+      <label for="f-name">名前</label>
+      <input id="f-name" type="text" placeholder="Emma" autocapitalize="words" />
+      <div class="hint">画面の表示と、相手が自分をどう名乗るかに使われます。</div>
+    </div>
+
+    <div class="field">
+      <label for="f-bg">背景</label>
+      <select id="f-bg"></select>
+    </div>
+
+    <div class="field">
+      <label for="f-bright">明るさ <span id="bright-val" style="color:var(--text)"></span></label>
+      <input id="f-bright" type="range" min="0.3" max="1.6" step="0.05" />
+      <div class="hint">肌が白く飛ぶときは下げてください。</div>
+    </div>
+
+    <div class="field">
+      <label>アバター</label>
+      <input id="f-modelfile" type="text" placeholder="./my-avatar.vrm" />
+      <div class="btnrow" style="margin-top:2px">
+        <button class="btn" id="btn-pick-vrm" type="button">端末から選ぶ</button>
+        <button class="btn" id="btn-clear-vrm" type="button">保存を解除</button>
+      </div>
+      <input id="f-vrmfile" type="file" accept=".vrm" style="display:none" />
+      <div class="hint" id="vrm-hint">
+        ファイル名はサイトに置いた .vrm を指します。端末から選ぶと、その端末内に保存して以後も使います。
+      </div>
+    </div>
 
     <div class="field">
       <label for="f-key">Gemini APIキー</label>
@@ -296,13 +327,12 @@ window.addEventListener('unhandledrejection', (ev) => console.error(ev.reason));
 // 設定
 // ===========================================================================
 
-const LOCAL_MODEL = './my-avatar.vrm';
 const FALLBACK_MODEL =
   'https://raw.githubusercontent.com/pixiv/three-vrm/dev/packages/three-vrm/examples/models/VRM1_Constraint_Twist_Sample.vrm';
 
 const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
 
-const DEFAULT_PERSONA = `You are Emma, a warm and slightly playful woman in her early thirties from Seattle. You are the user's partner. You are a native English speaker.
+const DEFAULT_PERSONA = `You are {name}, a warm and slightly playful woman in her early thirties from Seattle. You are the user's partner. You are a native English speaker.
 
 The user is practising spoken English. Their input may arrive as an audio recording. Listen to it and reply as Emma.
 
@@ -330,10 +360,26 @@ const EMOTION_VOICE = {
 const EMOTIONS = Object.keys(EMOTION_VOICE);
 
 const cfg = {
-  key:     localStorage.getItem('vw.key')     || '',
-  model:   localStorage.getItem('vw.model')   || DEFAULT_MODEL,
-  persona: localStorage.getItem('vw.persona') || DEFAULT_PERSONA,
-  voice:   localStorage.getItem('vw.voice')   || '',
+  key:        localStorage.getItem('vw.key')     || '',
+  model:      localStorage.getItem('vw.model')   || DEFAULT_MODEL,
+  persona:    localStorage.getItem('vw.persona') || DEFAULT_PERSONA,
+  voice:      localStorage.getItem('vw.voice')   || '',
+  name:       localStorage.getItem('vw.name')    || 'Emma',
+  modelFile:  localStorage.getItem('vw.modelFile') || './my-avatar.vrm',
+  useStored:  localStorage.getItem('vw.useStored') === '1',
+  bg:         localStorage.getItem('vw.bg')      || 'studio',
+  brightness: parseFloat(localStorage.getItem('vw.brightness') || '0.85'),
+};
+
+// 背景のプリセット
+const BACKGROUNDS = {
+  studio: { label:'スタジオ（暗）', css:'radial-gradient(ellipse 80% 55% at 50% 32%, #2b3038, #191b20 72%)' },
+  warm:   { label:'夕暮れ',         css:'radial-gradient(ellipse 80% 55% at 50% 32%, #3d3128, #1e1815 72%)' },
+  night:  { label:'夜',             css:'radial-gradient(ellipse 80% 55% at 50% 32%, #1e2a3c, #0f131b 72%)' },
+  rose:   { label:'薄紅',           css:'radial-gradient(ellipse 80% 55% at 50% 32%, #3a2b33, #1d161a 72%)' },
+  mint:   { label:'ミント',         css:'radial-gradient(ellipse 80% 55% at 50% 32%, #263733, #131c1a 72%)' },
+  plain:  { label:'無地（黒）',     css:'#0b0c0e' },
+  light:  { label:'無地（白）',     css:'radial-gradient(ellipse 80% 55% at 50% 32%, #f2efe9, #d9d4cc 72%)' },
 };
 
 // 先に宣言しておく変数（renderStatus から参照されます）
@@ -354,20 +400,37 @@ const MAX_SECONDS = 30;
 
 const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true, powerPreference:'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// 階調を圧縮して白飛びを抑えます。これが無いと明るい部分が真っ白に潰れます。
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
 document.getElementById('stage').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 30);
 
-const keyLight = new THREE.DirectionalLight(0xffffff, Math.PI * 0.9);
-keyLight.position.set(1, 1.4, 1.6).normalize();
+// 光を足しすぎると MToon の陰影が飛びます。主光源を抑え、補助は薄くします。
+const keyLight = new THREE.DirectionalLight(0xfff4e8, 1);
+keyLight.position.set(0.8, 1.3, 1.7).normalize();
 scene.add(keyLight);
 
-const fillLight = new THREE.DirectionalLight(0xbfd4e8, Math.PI * 0.35);
-fillLight.position.set(-1.4, 0.6, -0.8).normalize();
+const fillLight = new THREE.DirectionalLight(0xc2d6ea, 1);
+fillLight.position.set(-1.4, 0.5, -0.6).normalize();
 scene.add(fillLight);
 
-scene.add(new THREE.AmbientLight(0xffffff, Math.PI * 0.25));
+const ambLight = new THREE.AmbientLight(0xffffff, 1);
+scene.add(ambLight);
+
+// 明るさと背景をまとめて適用します。
+function applyLook() {
+  const b = Math.max(0.3, Math.min(1.6, cfg.brightness || 0.85));
+  keyLight.intensity  = Math.PI * 0.55 * b;
+  fillLight.intensity = Math.PI * 0.18 * b;
+  ambLight.intensity  = Math.PI * 0.10 * b;
+  renderer.toneMappingExposure = 0.85 + (b - 0.85) * 0.5;
+
+  const bg = BACKGROUNDS[cfg.bg] || BACKGROUNDS.studio;
+  document.getElementById('stage').style.background = bg.css;
+}
+applyLook();
 
 // 縦長の画面では横方向が狭くなるため、肩が切れないよう距離を計算します。
 function fitCamera() {
@@ -405,7 +468,48 @@ const loader = new GLTFLoader();
 loader.crossOrigin = 'anonymous';
 loader.register((parser) => new VRMLoaderPlugin(parser));
 
-function loadVRM(url) {
+// 端末に保存したモデルを扱います。スマホから選んだ .vrm を次回以降も使えます。
+function openDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('vw-store', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('files');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+
+async function saveStoredModel(blob) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('files', 'readwrite');
+    tx.objectStore('files').put(blob, 'avatar');
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+
+async function getStoredModel() {
+  try {
+    const db = await openDB();
+    return await new Promise((res) => {
+      const tx = db.transaction('files', 'readonly');
+      const rq = tx.objectStore('files').get('avatar');
+      rq.onsuccess = () => res(rq.result || null);
+      rq.onerror = () => res(null);
+    });
+  } catch { return null; }
+}
+
+// 起動時にどのモデルを読むか決めます。
+async function loadConfiguredModel() {
+  if (cfg.useStored) {
+    const blob = await getStoredModel();
+    if (blob) { loadVRM(URL.createObjectURL(blob), true); return; }
+  }
+  loadVRM(cfg.modelFile || './my-avatar.vrm');
+}
+
+function loadVRM(url, isObjectURL = false) {
   loader.load(
     url,
     (gltf) => {
@@ -422,6 +526,7 @@ function loadVRM(url) {
         const hit = cands.find((c) => avail.includes(c));
         if (hit) exprMap[logical] = hit;
       }
+      if (isObjectURL) URL.revokeObjectURL(url);
       document.getElementById('boot').classList.add('done');
       renderStatus();
     },
@@ -429,7 +534,8 @@ function loadVRM(url) {
       if (p.total) document.getElementById('boot-sub').textContent = `${Math.round(p.loaded / p.total * 100)}%`;
     },
     () => {
-      if (url === LOCAL_MODEL) { loadVRM(FALLBACK_MODEL); return; }
+      if (isObjectURL) URL.revokeObjectURL(url);
+      if (url !== FALLBACK_MODEL) { loadVRM(FALLBACK_MODEL); return; }
       const b = document.getElementById('boot');
       b.classList.add('failed');
       b.querySelector('.headline').textContent = 'モデルを読み込めません';
@@ -437,7 +543,7 @@ function loadVRM(url) {
     }
   );
 }
-loadVRM(LOCAL_MODEL);
+loadConfiguredModel();
 
 function setExpr(logical, v) {
   const name = exprMap[logical];
@@ -689,7 +795,8 @@ async function askGemini(userParts) {
     if (m === 'minimal') g.thinkingLevel = 'minimal';
     if (m === 'low') g.thinkingLevel = 'low';
     if (m === 'budget') g.thinkingConfig = { thinkingBudget: 0 };
-    return { systemInstruction: { parts: [{ text: cfg.persona }] }, contents, generationConfig: g };
+    const persona = `Your name is ${cfg.name}.\n\n` + cfg.persona.replaceAll('{name}', cfg.name);
+    return { systemInstruction: { parts: [{ text: persona }] }, contents, generationConfig: g };
   };
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cfg.model)}:generateContent`;
@@ -856,6 +963,11 @@ tick();
 // UI
 // ===========================================================================
 
+function applyName() {
+  document.querySelector('#sub-her .who').textContent = cfg.name;
+  document.title = cfg.name;
+}
+
 function setTalkUI(live) {
   const cap = document.getElementById('talk-cap');
   talkBtn.classList.toggle('live', live);
@@ -879,7 +991,7 @@ function addLog(userText, herText, emotion) {
     '<div class="bubble her" style="margin-top:6px"><span class="who"></span><span class="b2"></span></div>';
   wrap.querySelector('.b1').textContent = userText;
   wrap.querySelector('.b2').textContent = herText;
-  wrap.querySelector('.her .who').textContent = `Emma · ${emotion}`;
+  wrap.querySelector('.her .who').textContent = `${cfg.name} · ${emotion}`;
   logBody.appendChild(wrap);
   while (logBody.children.length > 30) logBody.removeChild(logBody.firstChild);
 }
@@ -916,6 +1028,19 @@ function openSheet(id) {
   if (id === 'sheet-settings') {
     document.getElementById('f-key').value = cfg.key;
     document.getElementById('f-persona').value = cfg.persona;
+    document.getElementById('f-name').value = cfg.name;
+    document.getElementById('f-modelfile').value = cfg.modelFile;
+
+    const bgSel = document.getElementById('f-bg');
+    bgSel.innerHTML = Object.entries(BACKGROUNDS)
+      .map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+    bgSel.value = cfg.bg;
+
+    const br = document.getElementById('f-bright');
+    br.value = cfg.brightness;
+    document.getElementById('bright-val').textContent = Number(cfg.brightness).toFixed(2);
+    document.getElementById('vrm-hint').dataset.stored = cfg.useStored ? '1' : '';
+
     syncModelFields();
     pickVoice();
     renderStatus();
@@ -948,6 +1073,43 @@ function syncModelFields() {
   txt.value = cfg.model;
 }
 
+document.getElementById('f-bright').addEventListener('input', (e) => {
+  cfg.brightness = parseFloat(e.target.value);
+  document.getElementById('bright-val').textContent = cfg.brightness.toFixed(2);
+  applyLook();
+});
+
+document.getElementById('f-bg').addEventListener('change', (e) => {
+  cfg.bg = e.target.value;
+  applyLook();
+});
+
+document.getElementById('btn-pick-vrm').addEventListener('click', () => {
+  document.getElementById('f-vrmfile').click();
+});
+
+document.getElementById('f-vrmfile').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.vrm')) { note('.vrm ファイルではありません。', 'bad'); return; }
+  try {
+    await saveStoredModel(file);
+    cfg.useStored = true;
+    localStorage.setItem('vw.useStored', '1');
+    loadVRM(URL.createObjectURL(file), true);
+    note(`${file.name} を端末に保存しました。`, 'ok');
+  } catch (err) {
+    note(`保存できません: ${err.message}`, 'bad');
+  }
+});
+
+document.getElementById('btn-clear-vrm').addEventListener('click', () => {
+  cfg.useStored = false;
+  localStorage.setItem('vw.useStored', '0');
+  loadVRM(cfg.modelFile || './my-avatar.vrm');
+  note('端末内の保存を使わない設定にしました。', 'ok');
+});
+
 document.getElementById('f-model-select').addEventListener('change', (e) => {
   const txt = document.getElementById('f-model');
   const custom = e.target.value === '__custom__';
@@ -963,12 +1125,26 @@ document.getElementById('btn-save').addEventListener('click', () => {
   cfg.model = (sel === '__custom__' ? document.getElementById('f-model').value.trim() : sel) || DEFAULT_MODEL;
   cfg.persona = document.getElementById('f-persona').value.trim() || DEFAULT_PERSONA;
   cfg.voice = document.getElementById('f-voice').value || '';
+  cfg.name = document.getElementById('f-name').value.trim() || 'Emma';
+  cfg.bg = document.getElementById('f-bg').value;
+  cfg.brightness = parseFloat(document.getElementById('f-bright').value);
+
+  const newFile = document.getElementById('f-modelfile').value.trim() || './my-avatar.vrm';
+  const fileChanged = newFile !== cfg.modelFile;
+  cfg.modelFile = newFile;
 
   localStorage.setItem('vw.key', cfg.key);
   localStorage.setItem('vw.model', cfg.model);
   localStorage.setItem('vw.persona', cfg.persona);
   localStorage.setItem('vw.voice', cfg.voice);
+  localStorage.setItem('vw.name', cfg.name);
+  localStorage.setItem('vw.bg', cfg.bg);
+  localStorage.setItem('vw.brightness', String(cfg.brightness));
+  localStorage.setItem('vw.modelFile', cfg.modelFile);
 
+  if (fileChanged && !cfg.useStored) loadVRM(cfg.modelFile);
+  applyLook();
+  applyName();
   pickVoice();
   closeSheet('sheet-settings');
   setTalkUI(recording);
@@ -1002,6 +1178,7 @@ function renderStatus() {
   el.innerHTML = parts.join('<br>');
 }
 
+applyName();
 setTalkUI(false);
 renderStatus();
 </script>
